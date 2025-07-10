@@ -1,4 +1,4 @@
-> ![WARNING]
+> [!WARNING]
 > GPT Generated README - not yet reviewed by human!
 
 # 🤗 HuggingFace Model Config Viewer
