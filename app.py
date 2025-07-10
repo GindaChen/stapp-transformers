@@ -15,15 +15,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import time
-from huggingface_hub import list_models
+from huggingface_hub import list_models, HfApi
 import re
 
 # Page config
 st.set_page_config(
-    page_title="🤗 HuggingFace Model Config Viewer",
+    page_title="HuggingFace Model Config Viewer",
     page_icon="🤗",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded"  # Note: This will be managed by settings in future versions
 )
 
 # Configuration
@@ -36,8 +36,25 @@ if not MODEL_REGISTRY_FILE.exists():
         json.dump([], f)
 MAX_RECENT_MODELS = 10
 
+# Default settings
+DEFAULT_SETTINGS = {
+    'use_number_units': False,
+    'cache_expiry_hours': 24,
+    'max_recent_models': 10,
+    'auto_refresh_on_settings_change': True,
+    'sidebar_expanded': True
+}
+
 # Create cache directory if it doesn't exist
 CACHE_DIR.mkdir(exist_ok=True)
+
+# Initialize settings module
+from settings import set_cache_dir, get_setting, set_setting, update_settings, reset_settings, get_cookie, set_cookie, clear_cookie
+set_cache_dir(CACHE_DIR)
+
+# Initialize safetensors cache
+import safetensors_info
+safetensors_info.set_safetensors_cache_dir(CACHE_DIR)
 
 # Configuration explanations for common parameters
 CONFIG_EXPLANATIONS = {
@@ -135,111 +152,160 @@ def search_huggingface_models(query: str, limit: int = 10) -> List[str]:
         return []
 
 
-def set_cookie(key: str, value: Any, expires_days: int = 30) -> None:
-    """Set a persistent value using local file storage."""
-    try:
-        # Create a user data directory
-        user_data_dir = CACHE_DIR / "user_data"
-        user_data_dir.mkdir(exist_ok=True)
-        
-        # Store data with expiry
-        data = {
-            'value': value,
-            'expires': (datetime.now() + timedelta(days=expires_days)).isoformat()
-        }
-        
-        # Save to file
-        with open(user_data_dir / f"{key}.json", 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        # Also store in session state if available
-        try:
-            if 'persistent_data' not in st.session_state:
-                st.session_state.persistent_data = {}
-            st.session_state.persistent_data[key] = data
-        except:
-            # Session state not available (e.g., running outside Streamlit)
-            pass
-        
-    except Exception:
-        # Fallback to session state only if available
-        try:
-            if 'persistent_data' not in st.session_state:
-                st.session_state.persistent_data = {}
-            st.session_state.persistent_data[key] = {
-                'value': value,
-                'expires': (datetime.now() + timedelta(days=expires_days)).isoformat()
-            }
-        except:
-            # Session state not available
-            pass
+# Settings functions are now in settings.py module
 
 
-def get_cookie(key: str, default: Any = None) -> Any:
-    """Get a persistent value from local file storage or session state."""
-    try:
-        # First check session state if available
-        try:
-            if 'persistent_data' in st.session_state and key in st.session_state.persistent_data:
-                data = st.session_state.persistent_data[key]
-                expires = datetime.fromisoformat(data['expires'])
-                
-                if datetime.now() < expires:
-                    return data['value']
-        except:
-            # Session state not available
-            pass
-        
-        # Try to load from file
-        user_data_dir = CACHE_DIR / "user_data"
-        file_path = user_data_dir / f"{key}.json"
-        
-        if file_path.exists():
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            expires = datetime.fromisoformat(data['expires'])
-            
-            if datetime.now() < expires:
-                # Store back in session state for faster access if available
-                try:
-                    if 'persistent_data' not in st.session_state:
-                        st.session_state.persistent_data = {}
-                    st.session_state.persistent_data[key] = data
-                except:
-                    # Session state not available
-                    pass
-                
-                return data['value']
-            else:
-                # File expired, remove it
-                file_path.unlink()
-        
-    except Exception:
-        pass
+def render_settings_menu() -> Dict[str, Any]:
+    """
+    Render the settings menu in the sidebar and return any changed settings.
     
-    return default
-
-
-def clear_cookie(key: str) -> None:
-    """Clear a persistent value."""
-    try:
-        # Remove from session state if available
-        try:
-            if 'persistent_data' in st.session_state and key in st.session_state.persistent_data:
-                del st.session_state.persistent_data[key]
-        except:
-            # Session state not available
-            pass
+    Returns:
+        Dictionary of changed settings (empty if no changes)
+    """
+    st.subheader("🎨 Settings")
+    
+    # Get current settings
+    from settings import get_settings
+    current_settings = get_settings()
+    changed_settings = {}
+    
+    # Display Settings Section
+    with st.expander("📊 Display Settings", expanded=True):
+        # Number formatting toggle
+        use_units = st.checkbox(
+            "Use K/M/B/T units for numbers",
+            value=current_settings['use_number_units'],
+            help="Format numbers like 4096 as 4K (where K = 1024)",
+            key="setting_use_units"
+        )
         
-        # Remove file
-        user_data_dir = CACHE_DIR / "user_data"
-        file_path = user_data_dir / f"{key}.json"
-        if file_path.exists():
-            file_path.unlink()
+        if use_units != current_settings['use_number_units']:
+            changed_settings['use_number_units'] = use_units
         
-    except Exception:
-        pass
+        # Auto-refresh toggle
+        auto_refresh = st.checkbox(
+            "Auto-refresh on settings change",
+            value=current_settings['auto_refresh_on_settings_change'],
+            help="Automatically refresh the display when settings change",
+            key="setting_auto_refresh"
+        )
+        
+        if auto_refresh != current_settings['auto_refresh_on_settings_change']:
+            changed_settings['auto_refresh_on_settings_change'] = auto_refresh
+    
+    # Cache Settings Section
+    with st.expander("💾 Cache Settings", expanded=False):
+        cache_hours = st.slider(
+            "Cache expiry (hours)",
+            min_value=1,
+            max_value=168,  # 1 week
+            value=current_settings['cache_expiry_hours'],
+            help="How long to keep cached model configurations",
+            key="setting_cache_hours"
+        )
+        
+        if cache_hours != current_settings['cache_expiry_hours']:
+            changed_settings['cache_expiry_hours'] = cache_hours
+        
+        max_recent = st.slider(
+            "Max recent models",
+            min_value=5,
+            max_value=50,
+            value=current_settings['max_recent_models'],
+            help="Maximum number of recent models to remember",
+            key="setting_max_recent"
+        )
+        
+        if max_recent != current_settings['max_recent_models']:
+            changed_settings['max_recent_models'] = max_recent
+        
+        # Cache management buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🗑️ Clear Cache", help="Clear all cached model configurations and safetensors data"):
+                # Clear all cache files
+                if CACHE_DIR.exists():
+                    for cache_file in CACHE_DIR.glob("*.json"):
+                        if cache_file.name != "model_registry.json":
+                            cache_file.unlink()
+                    
+                    # Clear safetensors cache
+                    safetensors_cache_dir = CACHE_DIR / "safetensors"
+                    if safetensors_cache_dir.exists():
+                        for cache_file in safetensors_cache_dir.glob("*.json"):
+                            cache_file.unlink()
+                
+                st.success("Cache cleared!")
+        
+        with col2:
+            if st.button("🔄 Reset Settings", help="Reset all settings to defaults"):
+                reset_settings()
+                st.success("Settings reset!")
+                st.rerun()
+    
+    # Advanced Settings Section
+    with st.expander("⚙️ Advanced Settings", expanded=False):
+        sidebar_expanded = st.checkbox(
+            "Sidebar expanded by default",
+            value=current_settings['sidebar_expanded'],
+            help="Whether the sidebar should be expanded when the app loads",
+            key="setting_sidebar_expanded"
+        )
+        
+        if sidebar_expanded != current_settings['sidebar_expanded']:
+            changed_settings['sidebar_expanded'] = sidebar_expanded
+        
+        # Export/Import settings
+        st.markdown("**Settings Management:**")
+        
+        # Export settings
+        settings_json = json.dumps(current_settings, indent=2)
+        st.download_button(
+            "📥 Export Settings",
+            data=settings_json,
+            file_name="hf_config_viewer_settings.json",
+            mime="application/json",
+            help="Download current settings as JSON file"
+        )
+        
+        # Import settings
+        uploaded_file = st.file_uploader(
+            "📤 Import Settings",
+            type=['json'],
+            help="Upload a settings JSON file to restore settings",
+            key="settings_upload"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                imported_settings = json.load(uploaded_file)
+                # Validate imported settings
+                valid_settings = {}
+                for key, value in imported_settings.items():
+                    if key in DEFAULT_SETTINGS:
+                        valid_settings[key] = value
+                
+                if valid_settings:
+                    update_settings(valid_settings)
+                    st.success(f"Imported {len(valid_settings)} settings!")
+                    st.rerun()
+                else:
+                    st.error("No valid settings found in the uploaded file.")
+            except json.JSONDecodeError:
+                st.error("Invalid JSON file.")
+            except Exception as e:
+                st.error(f"Error importing settings: {str(e)}")
+    
+    # Apply changed settings
+    if changed_settings:
+        update_settings(changed_settings)
+        
+        # Auto-refresh if enabled
+        if current_settings.get('auto_refresh_on_settings_change', True):
+            if hasattr(st.session_state, 'last_result') and st.session_state.last_result:
+                st.rerun()
+    
+    return changed_settings
 
 
 def get_recent_models() -> List[str]:
@@ -271,7 +337,10 @@ def add_recent_model(model_name: str) -> None:
     if model_name in recent:
         recent.remove(model_name)
     recent.insert(0, model_name)
-    recent = recent[:MAX_RECENT_MODELS]
+    
+    # Use setting for max recent models
+    max_recent = get_setting('max_recent_models', MAX_RECENT_MODELS)
+    recent = recent[:max_recent]
     
     # Update both session state and cookies
     st.session_state.recent_models = recent
@@ -316,7 +385,9 @@ def is_cache_valid(cache_path: Path) -> bool:
         return False
     
     cache_time = datetime.fromtimestamp(cache_path.stat().st_mtime)
-    expiry_time = cache_time + timedelta(hours=CACHE_EXPIRY_HOURS)
+    # Use setting for cache expiry
+    cache_hours = get_setting('cache_expiry_hours', CACHE_EXPIRY_HOURS)
+    expiry_time = cache_time + timedelta(hours=cache_hours)
     
     return datetime.now() < expiry_time
 
@@ -460,16 +531,21 @@ def main():
             placeholder="hf_..."
         )
         
-        if st.button("💾 Save Token"):
-            set_hf_token(token_input)
-            st.success("Token saved!")
-        
-        if current_token:
-            st.success("✅ Token configured")
-            if st.button("🗑️ Clear Token"):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save Token"):
+                set_hf_token(token_input)
+                st.success("Token saved!")
+        with col2:
+            if current_token and st.button("🗑️ Clear Token"):
                 set_hf_token("")
                 st.success("Token cleared!")
                 st.rerun()
+        
+        if current_token:
+            st.success("✅ Token configured")
+        
+        
         
         st.markdown("---")
         
@@ -512,7 +588,7 @@ def main():
         # Show HuggingFace suggestions for manual input (outside form to avoid conflicts)
         if manual_input and len(manual_input) >= 3:  # Require at least 3 characters for better search
             with st.spinner("Searching HuggingFace Hub..."):
-                hf_suggestions = search_huggingface_models(manual_input, limit=8)
+                hf_suggestions = search_huggingface_models(manual_input, limit=20)
             
             if hf_suggestions:
                 st.markdown("**🤗 HuggingFace Suggestions:**")
@@ -532,18 +608,59 @@ def main():
         
         load_config = False  # Form submission handles loading
         
-        st.markdown("---")
+        # st.markdown("---")
         
-        # Recent Models
         st.subheader("🕒 Recently Viewed")
         recent_models = get_recent_models()
+        
         if recent_models:
-            for model in recent_models[:10]:
-                if st.button(f"📄 {model}", key=f"recent_{model}", use_container_width=True):
+            # Initialize page state
+            if 'recent_page' not in st.session_state:
+                st.session_state.recent_page = 0
+            
+            models_per_page = 3
+            total_pages = (len(recent_models) + models_per_page - 1) // models_per_page
+            current_page = st.session_state.recent_page
+            
+            # Ensure current page is valid
+            if current_page >= total_pages:
+                st.session_state.recent_page = 0
+                current_page = 0
+            
+            # Get models for current page
+            start_idx = current_page * models_per_page
+            end_idx = min(start_idx + models_per_page, len(recent_models))
+            page_models = recent_models[start_idx:end_idx]
+            
+            # Display models for current page
+            for model in page_models:
+                if st.button(f"📄 {model}", key=f"recent_{model}_{current_page}", use_container_width=True):
                     st.session_state.selected_model = model
                     st.rerun()
+            
+            # Pagination controls
+            if total_pages > 1:
+                col1, col2, col3 = st.columns([1, 2, 1])
+                
+                with col1:
+                    if st.button("◀ Prev", disabled=(current_page == 0), use_container_width=True):
+                        st.session_state.recent_page = current_page - 1
+                        st.rerun()
+                
+                with col2:
+                    st.markdown(f"<div style='text-align: center; padding: 8px;'>Page {current_page + 1} of {total_pages}</div>", unsafe_allow_html=True)
+                
+                with col3:
+                    if st.button("Next ▶", disabled=(current_page == total_pages - 1), use_container_width=True):
+                        st.session_state.recent_page = current_page + 1
+                        st.rerun()
         else:
             st.info("No recent models")
+
+        st.markdown("---")
+        
+        # Render settings menu
+        render_settings_menu()
     
     # Main content area
     # Check if we need to load a model
@@ -564,10 +681,6 @@ def main():
             # Store in session state
             st.session_state.last_result = result
             
-            # Display success message
-            cache_status = "🟢 Cached" if result['cached'] else "🔵 Fresh"
-            st.success(f"Loaded configuration for **{result['model_name']}** {cache_status}")
-            
         except Exception as e:
             st.error(f"❌ Error loading config: {str(e)}")
             st.session_state.last_result = None
@@ -577,9 +690,9 @@ def main():
         result = st.session_state.last_result
         
         # Header with model info
-        col1, col2 = st.columns([2, 1])
+        col1, col2 = st.columns([4, 1])
         with col1:
-            st.subheader(f"{result['model_name']}")
+            st.markdown(f"## {result['model_name']}")
         
         with col2:
             model_name = result['model_name']
@@ -587,28 +700,10 @@ def main():
             st.markdown(f"[Go to Model Page]({hf_url})", unsafe_allow_html=True)
         
         
-
-        
         # Tabs for different views
-        tab1, tab2 = st.tabs(["🗂️ Raw JSON", "📖 Full Analysis"])
+        tab1, tab2, tab3 = st.tabs(["🗂️ Raw JSON", "📖 Full Analysis", "🔒 Safetensors"])
         
-        with tab1:
-            st.markdown("### Raw Configuration JSON")
-            
-            # # Display config size and structure info
-            # col1, col2, col3 = st.columns(3)
-            # with col1:
-            #     st.metric("Total Keys", len(result['config']))
-            # with col2:
-            #     # Count nested objects and arrays
-            #     nested_count = sum(1 for v in result['config'].values() if isinstance(v, (dict, list)))
-            #     st.metric("Nested Objects", nested_count)
-            # with col3:
-            #     config_json = json.dumps(result['config'], indent=2)
-            #     st.metric("JSON Size", f"{len(config_json):,} chars")
-            
-            # st.markdown("---")
-            
+        with tab1:            
             # Format JSON with proper indentation and make it copyable
             formatted_json = json.dumps(result['config'], indent=2, ensure_ascii=False)
             
@@ -699,53 +794,12 @@ def main():
                     st.dataframe(df, use_container_width=True, height=min(400, len(filtered_keys) * 35 + 50))
         
         with tab2:
-            st.markdown("### Configuration Analysis")
-            
-            config = result['config']
-            
-            # Model statistics
-            st.subheader("📊 Model Statistics")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                if 'num_hidden_layers' in config:
-                    st.metric("Layers", config['num_hidden_layers'])
-            
-            with col2:
-                if 'hidden_size' in config:
-                    st.metric("Hidden Size", f"{config['hidden_size']:,}")
-            
-            with col3:
-                if 'vocab_size' in config:
-                    st.metric("Vocabulary", f"{config['vocab_size']:,}")
-            
-            with col4:
-                if 'num_attention_heads' in config:
-                    st.metric("Attention Heads", config['num_attention_heads'])
-            
-            # Calculate model size estimation
-            if all(k in config for k in ['num_hidden_layers', 'hidden_size', 'vocab_size']):
-                # Rough parameter estimation
-                hidden_size = config['hidden_size']
-                num_layers = config['num_hidden_layers']
-                vocab_size = config['vocab_size']
-                
-                # Embedding parameters
-                embedding_params = vocab_size * hidden_size
-                
-                # Transformer layer parameters (simplified)
-                attention_params = 4 * hidden_size * hidden_size  # Q, K, V, O projections
-                ffn_params = 2 * hidden_size * config.get('intermediate_size', 4 * hidden_size)
-                layer_params = attention_params + ffn_params
-                total_layer_params = num_layers * layer_params
-                
-                # Total parameters (rough estimate)
-                total_params = embedding_params + total_layer_params
-                
-                st.subheader("🧮 Parameter Estimation")
-                st.info(f"Estimated parameters: **{total_params/1e6:.1f}M** (rough calculation)")
-                st.caption("This is a simplified estimation and may not match the actual model size.")
+            import analysis
+            analysis.display_full_analysis(result['config'])
+        
+        with tab3:
+            import safetensors_info
+            safetensors_info.display_safetensors_page(result['model_name'], get_hf_token())
     
     else:
         # Show welcome message
