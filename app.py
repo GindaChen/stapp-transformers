@@ -31,6 +31,9 @@ CACHE_DIR = Path("config_cache")
 CACHE_EXPIRY_HOURS = 24
 HF_CONFIG_URL = "https://huggingface.co/{model_name}/resolve/main/config.json"
 MODEL_REGISTRY_FILE = Path("model_registry.json")
+if not MODEL_REGISTRY_FILE.exists():
+    with open(MODEL_REGISTRY_FILE, 'w', encoding='utf-8') as f:
+        json.dump([], f)
 MAX_RECENT_MODELS = 10
 
 # Create cache directory if it doesn't exist
@@ -574,20 +577,17 @@ def main():
         result = st.session_state.last_result
         
         # Header with model info
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.subheader(f"📊 {result['model_name']}")
+            st.subheader(f"{result['model_name']}")
         
         with col2:
             model_name = result['model_name']
             hf_url = f"https://huggingface.co/{model_name}"
             st.markdown(f"[Go to Model Page]({hf_url})", unsafe_allow_html=True)
-            
-        with col3:
-            config_size = len(result['config'])
-            st.metric("Parameters", f"{config_size}")
         
-        st.markdown("---")
+        
+
         
         # Tabs for different views
         tab1, tab2 = st.tabs(["🗂️ Raw JSON", "📖 Full Analysis"])
@@ -595,19 +595,19 @@ def main():
         with tab1:
             st.markdown("### Raw Configuration JSON")
             
-            # Display config size and structure info
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Keys", len(result['config']))
-            with col2:
-                # Count nested objects and arrays
-                nested_count = sum(1 for v in result['config'].values() if isinstance(v, (dict, list)))
-                st.metric("Nested Objects", nested_count)
-            with col3:
-                config_json = json.dumps(result['config'], indent=2)
-                st.metric("JSON Size", f"{len(config_json):,} chars")
+            # # Display config size and structure info
+            # col1, col2, col3 = st.columns(3)
+            # with col1:
+            #     st.metric("Total Keys", len(result['config']))
+            # with col2:
+            #     # Count nested objects and arrays
+            #     nested_count = sum(1 for v in result['config'].values() if isinstance(v, (dict, list)))
+            #     st.metric("Nested Objects", nested_count)
+            # with col3:
+            #     config_json = json.dumps(result['config'], indent=2)
+            #     st.metric("JSON Size", f"{len(config_json):,} chars")
             
-            st.markdown("---")
+            # st.markdown("---")
             
             # Format JSON with proper indentation and make it copyable
             formatted_json = json.dumps(result['config'], indent=2, ensure_ascii=False)
